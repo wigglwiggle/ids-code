@@ -1,0 +1,194 @@
+import os
+import time
+import tkinter as tk
+from tkinter import messagebox, filedialog
+import smtplib
+from email.mime.text import MIMEText
+from hashlib import md5
+from threading import Thread
+
+class DirectoryInfo:
+    def __init__(self, path):
+        self.path = path
+        self.files = self.get_files()
+
+    def get_files(self):
+        file_hashes = {}
+        for root, dirs, files in os.walk(self.path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_hashes[file_path] = self.get_file_hash(file_path)
+        return file_hashes
+
+    def get_file_hash(self, file_path):
+        hash_md5 = md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+class IntrusionDetectionSystem:
+    def __init__(self):
+        self.window = tk.Tk()
+        self.window.title("Intrusion Detection System")
+        self.window.geometry("500x350")
+        self.window.configure(bg="#f0f0f0")
+
+        # Email configuration
+        self.email_config = {
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 587,
+            "username": "your_email@gmail.com",
+            "password": "your_password",
+            "recipient": "recipient_email@example.com"
+        }
+
+        # Create the GUI components
+        self.create_gui()
+
+        # Initialize the stop flag after the root window is created
+        self.stop_flag = tk.BooleanVar(value=False)
+        self.monitoring_thread = None
+
+    def create_gui(self):
+        # Main frame
+        main_frame = tk.Frame(self.window, padx=15, pady=15, bg="#e0f7fa")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Directory Monitoring Frame
+        dir_frame = tk.LabelFrame(main_frame, text="Directory Monitoring", padx=10, pady=10, bg="#b2dfdb", font=("Arial", 12))
+        dir_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        tk.Label(dir_frame, text="Directory to monitor:", bg="#b2dfdb", font=("Arial", 10)).grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.entry = tk.Entry(dir_frame, width=40)
+        self.entry.grid(row=0, column=1, pady=5, sticky=tk.W)
+
+        # Adjusted placement of browse button
+        self.browse_button = tk.Button(dir_frame, text="Browse", command=self.browse_directory, bg="#4caf50", fg="white", font=("Arial", 10))
+        self.browse_button.grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+
+        tk.Label(dir_frame, text="Ignore files/directories (comma separated):", bg="#b2dfdb", font=("Arial", 10)).grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.ignore_entry = tk.Entry(dir_frame, width=40)
+        self.ignore_entry.grid(row=1, column=1, pady=5, sticky=tk.W)
+
+        tk.Label(dir_frame, text="Monitoring Interval (seconds):", bg="#b2dfdb", font=("Arial", 10)).grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.interval_entry = tk.Entry(dir_frame, width=10)
+        self.interval_entry.insert(0, "30")
+        self.interval_entry.grid(row=2, column=1, pady=5, sticky=tk.W)
+
+        button_frame = tk.Frame(main_frame, bg="#e0f7fa")
+        button_frame.pack(pady=10)
+
+        self.start_button = tk.Button(button_frame, text="Start Monitoring", command=self.start_monitoring, bg="#4caf50", fg="white", font=("Arial", 10))
+        self.start_button.pack(side=tk.LEFT, padx=5)
+
+        self.stop_button = tk.Button(button_frame, text="Stop Monitoring", command=self.stop_monitoring, bg="#f44336", fg="white", font=("Arial", 10))
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+
+        self.status_label = tk.Label(main_frame, text="Status: Ready", fg="green", bg="#e0f7fa", font=("Arial", 12))
+        self.status_label.pack(pady=10)
+
+        # Log Frame
+        log_frame = tk.LabelFrame(main_frame, text="Activity Log", padx=10, pady=10, bg="#b2dfdb", font=("Arial", 12))
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.log_text = tk.Text(log_frame, height=8, width=60, wrap=tk.WORD, bg="#ffffff", font=("Arial", 10))
+        self.log_text.pack(padx=5, pady=5)
+
+        self.scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.config(yscrollcommand=self.scrollbar.set)
+
+    def browse_directory(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, directory)
+
+    def start_monitoring(self):
+        directory = self.entry.get()
+        if not os.path.isdir(directory):
+            messagebox.showerror("Error", "Invalid directory path")
+            return
+        
+        ignore_list = [item.strip() for item in self.ignore_entry.get().split(",")]
+        try:
+            self.monitoring_interval = int(self.interval_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "Invalid interval value")
+            return
+        
+        self.dir = DirectoryInfo(directory)
+        self.status_label.config(text="Status: Monitoring...", fg="orange")
+        self.stop_flag.set(False)
+        self.log_text.delete(1.0, tk.END)
+
+        # Start monitoring in a separate thread
+        if self.monitoring_thread is None or not self.monitoring_thread.is_alive():
+            self.monitoring_thread = Thread(target=self.monitor_directory, args=(ignore_list,))
+            self.monitoring_thread.start()
+
+    def stop_monitoring(self):
+        self.stop_flag.set(True)
+        self.status_label.config(text="Status: Monitoring Stopped", fg="red")
+        self.log("Monitoring stopped.")
+
+    def monitor_directory(self, ignore_list):
+        try:
+            while not self.stop_flag.get():
+                new_dir = DirectoryInfo(self.dir.path)
+                changes = self.detect_changes(new_dir, ignore_list)
+                if changes:
+                    self.send_email_alert(changes)
+                    self.update_log("\n".join(changes))
+                self.dir = new_dir
+                time.sleep(self.monitoring_interval)  # Check every specified interval
+        except Exception as e:
+            self.update_log(f"An error occurred: {e}")
+
+    def detect_changes(self, new_dir, ignore_list):
+        changes = []
+        for file_path, file_hash in new_dir.files.items():
+            if file_path not in self.dir.files:
+                if not any(ignored in file_path for ignored in ignore_list):
+                    changes.append(f"New file detected: {file_path}")
+            elif self.dir.files[file_path] != file_hash:
+                if not any(ignored in file_path for ignored in ignore_list):
+                    changes.append(f"Modified file detected: {file_path}")
+
+        for file_path in self.dir.files:
+            if file_path not in new_dir.files:
+                if not any(ignored in file_path for ignored in ignore_list):
+                    changes.append(f"Deleted file detected: {file_path}")
+
+        return changes
+
+    def send_email_alert(self, changes):
+        if not changes:
+            return
+        
+        message = "Intrusion detected:\n" + "\n".join(changes)
+        msg = MIMEText(message)
+        msg["Subject"] = "Intrusion Detection Alert"
+        msg["From"] = self.email_config["username"]
+        msg["To"] = self.email_config["recipient"]
+
+        try:
+            with smtplib.SMTP(self.email_config["smtp_server"], self.email_config["smtp_port"]) as server:
+                server.starttls()
+                server.login(self.email_config["username"], self.email_config["password"])
+                server.send_message(msg)
+            self.update_log("Alert email sent.")
+        except Exception as e:
+            self.update_log(f"Failed to send email: {e}")
+
+    def update_log(self, message):
+        self.window.after(0, self.log, message)
+
+    def log(self, message):
+        self.log_text.insert(tk.END, f"{message}\n")
+        self.log_text.see(tk.END)
+
+if __name__ == "__main__":
+    ids = IntrusionDetectionSystem()
+    ids.window.mainloop()
